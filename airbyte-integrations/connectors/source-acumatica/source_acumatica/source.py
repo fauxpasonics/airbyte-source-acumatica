@@ -56,6 +56,8 @@ class AcumaticaStream(Stream, ABC):
             return self.config["BASEURL"] + "/entity/Default/23.200.001/"
         elif(self._endpointtype=="DAC"):
             return self.config["BASEURL"] + "/odatav4/" + self.config["TENANTNAME"] + "/"
+        elif(self._endpointtype=="Inquiry"):
+            return self.config["BASEURL"] + "/odata/" + self.config["TENANTNAME"] + "/"
         else:
             return self.config["BASEURL"]
 
@@ -65,20 +67,6 @@ class AcumaticaStream(Stream, ABC):
         return self._name
 
     def next_page_token(self, response: requests.Response) -> Optional[Mapping[str, Any]]:
-        """
-        TODO: Override this method to define a pagination strategy. If you will not be using pagination, no action is required - just return None.
-
-        This method should return a Mapping (e.g: dict) containing whatever information required to make paginated requests. This dict is passed
-        to most other methods in this class to help you form headers, request bodies, query params, etc..
-
-        For example, if the API accepts a 'page' parameter to determine which page of the result to return, and a response from the API contains a
-        'page' number, then this method should probably return a dict {'page': response.json()['page'] + 1} to increment the page count by 1.
-        The request_params method should then read the input next_page_token and set the 'page' param to next_page_token['page'].
-
-        :param response: the most recent response from the API
-        :return If there is another page in the result, a mapping (e.g: dict) containing information needed to query the next page in the response.
-                If there are no more pages in the result, return None.
-        """
         return None
     
     def get_json_schema(self):
@@ -88,7 +76,10 @@ class AcumaticaStream(Stream, ABC):
         self, stream_state: Mapping[str, Any], stream_slice: Mapping[str, any] = None, next_page_token: Mapping[str, Any] = None
     ) -> MutableMapping[str, Any]:
         if(stream_state):
-            query=f"{self.cursor_field} gt datetimeoffset'{stream_state.get(self.cursor_field)}'"
+            if(self._endpointtype in ["DAC","Inquiry"]):
+                query=f"{self.cursor_field} gt {stream_state.get(self.cursor_field)}"
+            else:
+                query=f"{self.cursor_field} gt datetimeoffset'{stream_state.get(self.cursor_field)}'"
             #logger.info(f"Request Params - Query: {query}")
         #logger.info(f"{inspect.stack()}")
             return {"$filter":query}
@@ -125,13 +116,16 @@ class AcumaticaStream(Stream, ABC):
             flattenedjsonvals=[]
             if(response.status_code==200 and len(response.content)>0):
                 responsejson=response.json()
-                if("@odata.context" in responsejson):
+                if("@odata.context" in responsejson or "odata.metadata" in responsejson):
                     flattenedjsonvals=flatten_json_array(responsejson["value"])
                 else:
                     flattenedjsonvals=flatten_json_array(responsejson)
+            else:
+                raise Exception(f"Error pulling Data:{response.status_code} - {response.content}")
             yield from flattenedjsonvals
         except Exception as ex:
             logger.error(ex)
+            raise ex
         else:
             logoutFromAcumatica(httpclient=self._http_client,config=self.config)
 
@@ -146,13 +140,6 @@ class IncrementalAcumaticaStream(AcumaticaStream, ABC):
     
     @property
     def cursor_field(self) -> str:
-    #     """
-    #     TODO
-    #     Override to return the cursor field used by this stream e.g: an API entity might always use created_at as the cursor field. This is
-    #     usually id or date based. This field's presence tells the framework this in an incremental stream. Required for incremental.
-
-    #     :return str: The name of the cursor field.
-    #     """
         return self._cursor_field
 
     def get_updated_state(self, current_stream_state: MutableMapping[str, Any], latest_record: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -172,16 +159,6 @@ class IncrementalAcumaticaStream(AcumaticaStream, ABC):
 # Source
 class SourceAcumatica(AbstractSource):
     def check_connection(self, logger, config) -> Tuple[bool, any]:
-        """
-        TODO: Implement a connection check to validate that the user-provided config can be used to connect to the underlying API
-
-        See https://github.com/airbytehq/airbyte/blob/master/airbyte-integrations/connectors/source-stripe/source_stripe/source.py#L232
-        for an example.
-
-        :param config:  the user-input config object conforming to the connector's spec.yaml
-        :param logger:  logger object
-        :return Tuple[bool, any]: (True, None) if the input config can be used to connect to the API successfully, (False, error) otherwise.
-        """
         # Acumatica OAuth2 credentials
         token = get_access_token(config)
         if token != None:
@@ -189,11 +166,6 @@ class SourceAcumatica(AbstractSource):
         return False, None
 
     def streams(self, config: Mapping[str, Any]) -> List[Stream]:
-        """
-        TODO: Replace the streams below with your own streams.
-
-        :param config: A Mapping of the user input configuration as defined in the connector spec.
-        """
         accesstoken=get_access_token(config)
         auth = TokenAuthenticator(token=accesstoken)  # Oauth2Authenticator is also available if you need oauth support
         self.http_client = HttpClient(
@@ -207,10 +179,11 @@ class SourceAcumatica(AbstractSource):
         # Contract Based Streams
         contractschemas = getmetatdata(httpclient=self.http_client,config=config)
         streams.extend(self.getStreams(config, "contract", auth, contractschemas))
-
-
+        #Odatav4 (Inquiry) Based Streams
+        odata3schemas=getodata3metadata(httpclient=self.http_client,endpointtype="Inquiry",config=config)
+        streams.extend(self.getStreams(config,"Inquiry", auth, odata3schemas))
         #Odatav4 (DAC) Based Streams
-        odata4schemas=getodata4metadata(httpclient=self.http_client,config=config)
+        odata4schemas=getodata4metadata(httpclient=self.http_client,endpointtype="DAC",config=config)
         streams.extend(self.getStreams(config,"DAC", auth, odata4schemas))
 
         return streams
@@ -346,7 +319,7 @@ def getmetatdata(httpclient:HttpClient, config):
         logoutFromAcumatica(httpclient,config)
         return extract_get_schemas(swaggerjson)
 
-def getodata4metadata(httpclient:HttpClient, config):
+def getodata4metadata(httpclient:HttpClient,endpointtype, config):
 #Get the entities from metadata and generate the schemas
         headers= {#'User-Agent': 'python-requests/2.32.3'
           'Accept': 'application/json'
@@ -358,17 +331,38 @@ def getodata4metadata(httpclient:HttpClient, config):
         _,metadataresponse = httpclient.send_request(http_method="GET",request_kwargs={},url=metadataurl,headers=headers)
         odata4xml=metadataresponse.text
         logoutFromAcumatica(httpclient,config)
-        return odata_xml_to_json_schema(odata4xml)
+        return odata_xml_to_json_schema(odata4xml,4,endpointtype)
 
-def odata_xml_to_json_schema(xml_string):
+def getodata3metadata(httpclient:HttpClient,endpointtype,config):
+    headers= {#'User-Agent': 'python-requests/2.32.3'
+          'Accept': 'application/json'
+          , 'Connection': 'Close'
+          , 'Content-Type': 'application/json'
+          , 'Cache-Control': 'no-cache'}
+    tenantname=config["TENANTNAME"]
+    metadataurl=urljoin(config["BASEURL"],f"/OData/{tenantname}/$metadata")
+    _,metadataresponse = httpclient.send_request(http_method="GET",request_kwargs={},url=metadataurl,headers=headers)
+    odataxml=metadataresponse.text
+    logoutFromAcumatica(httpclient,config)
+    return odata_xml_to_json_schema(odataxml,3,endpointtype)
+    
+
+
+def odata_xml_to_json_schema(xml_string,version,endpointtype):
     # Parse the XML string
     root = ET.fromstring(xml_string)
 
     # Define namespaces
-    namespaces = {
-        'edmx': 'http://docs.oasis-open.org/odata/ns/edmx',
-        'edm': 'http://docs.oasis-open.org/odata/ns/edm'
-    }
+    namespaces = {}
+    
+    if version==4:
+        namespaces={
+            'edmx': 'http://docs.oasis-open.org/odata/ns/edmx',
+            'edm': 'http://docs.oasis-open.org/odata/ns/edm'
+        }
+    else:
+        namespaces={'edmx': 'http://schemas.microsoft.com/ado/2007/06/edmx',
+            'edm': 'http://schemas.microsoft.com/ado/2009/11/edm'}
     
     # Find edmx:DataServices node
     data_services = root.find('edmx:DataServices',namespaces)
@@ -415,7 +409,7 @@ def odata_xml_to_json_schema(xml_string):
         
         streamdata["primarykey"]=keys
         streamdata["schema"]=schema
-        fullschemaname="DAC__" + entity_set_name
+        fullschemaname=f"{endpointtype}__" + entity_set_name
         schemas[fullschemaname] = streamdata
 
     return schemas
