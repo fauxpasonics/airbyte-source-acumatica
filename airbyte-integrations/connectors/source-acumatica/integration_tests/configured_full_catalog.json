@@ -2,7 +2,7 @@
   "streams": [
     {
       "stream": {
-        "name": "Inquiry__KNR-CustPricebyWhse",
+        "name": "DAC__Location",
         "json_schema": {},
         "supported_sync_modes": ["full_refresh", "incremental"]
       },

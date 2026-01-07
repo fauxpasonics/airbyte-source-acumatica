@@ -30,7 +30,11 @@ logger = logging.getLogger("airbyte")
 # Basic full refresh stream
 class AcumaticaStream(Stream, ABC):
 
-    def __init__(self,name:str,endpointtype:str,config: Mapping[str, Any],schema: dict[str,Any],primary_key:Optional[Union[str, List[str], List[List[str]]]], authenticator = None):
+    def __init__(self,name:str,endpointtype:str,
+                 config: Mapping[str, Any],
+                 schema: dict[str,Any],
+                 primary_key:Optional[Union[str, List[str], List[List[str]]]], 
+                 authenticator = None):
         super().__init__()
         self.config=config
         self._exit_on_rate_limit: bool = False
@@ -43,6 +47,8 @@ class AcumaticaStream(Stream, ABC):
             logger=self.logger,
             authenticator=authenticator
         )
+        self._page_size=self.config.get("PAGESIZE",1000)
+        self._current_page=0
 
     @property
     def name(self):
@@ -66,15 +72,13 @@ class AcumaticaStream(Stream, ABC):
     ) -> str:
         return self._name
 
-    def next_page_token(self, response: requests.Response) -> Optional[Mapping[str, Any]]:
-        return None
-    
     def get_json_schema(self):
         return self._schema
 
     def request_params(
-        self, stream_state: Mapping[str, Any], stream_slice: Mapping[str, any] = None, next_page_token: Mapping[str, Any] = None
+        self, stream_state: Mapping[str, Any], stream_slice: Mapping[str, any] = None, next_page_token: int = None
     ) -> MutableMapping[str, Any]:
+        returnobj={}
         if(stream_state):
             if(self._endpointtype in ["DAC","Inquiry"]):
                 query=f"{self.cursor_field} gt {stream_state.get(self.cursor_field)}"
@@ -82,8 +86,11 @@ class AcumaticaStream(Stream, ABC):
                 query=f"{self.cursor_field} gt datetimeoffset'{stream_state.get(self.cursor_field)}'"
             #logger.info(f"Request Params - Query: {query}")
         #logger.info(f"{inspect.stack()}")
-            return {"$filter":query}
-        return {}
+            returnobj["$filter"] = query
+        if(next_page_token or next_page_token>=0):
+            returnobj["$top"]=self._page_size
+            returnobj["$skip"]=next_page_token*self._page_size
+        return returnobj
 
     def request_headers(
         self, stream_state: Mapping[str, Any], stream_slice: Mapping[str, any] = None, next_page_token: Mapping[str, Any] = None
@@ -105,29 +112,39 @@ class AcumaticaStream(Stream, ABC):
                 self.path(stream_state=stream_state, stream_slice=stream_slice),
             )
         
-        try:
-            requestparams=self.request_params(stream_state=stream_state,stream_slice=stream_slice)
-            logger.info(f"Sending request to {urlpath} with params: {requestparams}")
-            _,response = self._http_client.send_request(http_method="GET"
-                                                            ,url=urlpath
-                                                            ,request_kwargs={}
-                                                            ,headers=self.request_headers(stream_state=stream_state,stream_slice=stream_slice)
-                                                            ,params=requestparams)
-            flattenedjsonvals=[]
-            if(response.status_code==200 and len(response.content)>0):
-                responsejson=response.json()
-                if("@odata.context" in responsejson or "odata.metadata" in responsejson):
-                    flattenedjsonvals=flatten_json_array(responsejson["value"])
+        pagination_complete = False
+        next_page_token=self._current_page
+        
+        while not pagination_complete:
+            try:
+                
+                requestparams=self.request_params(stream_state=stream_state,stream_slice=stream_slice,next_page_token=next_page_token)
+                logger.info(f"Sending request to {urlpath} with params: {requestparams}")
+                _,response = self._http_client.send_request(http_method="GET"
+                                                                ,url=urlpath
+                                                                ,request_kwargs={}
+                                                                ,headers=self.request_headers(stream_state=stream_state,stream_slice=stream_slice)
+                                                                ,params=requestparams)
+                flattenedjsonvals=[]
+                if(response.status_code==200 and len(response.content)>0):
+                    responsejson=response.json()
+                    if("@odata.context" in responsejson or "odata.metadata" in responsejson):
+                        flattenedjsonvals=flatten_json_array(responsejson["value"])
+                    else:
+                        flattenedjsonvals=flatten_json_array(responsejson)
                 else:
-                    flattenedjsonvals=flatten_json_array(responsejson)
+                    raise Exception(f"Error pulling Data:{response.status_code} - {response.content}")
+                yield from flattenedjsonvals
+                if len(flattenedjsonvals)==0:
+                    pagination_complete = True
+                else:
+                    self._current_page += 1
+                    next_page_token=self._current_page
+            except Exception as ex:
+                logger.error(ex)
+                raise ex
             else:
-                raise Exception(f"Error pulling Data:{response.status_code} - {response.content}")
-            yield from flattenedjsonvals
-        except Exception as ex:
-            logger.error(ex)
-            raise ex
-        else:
-            logoutFromAcumatica(httpclient=self._http_client,config=self.config)
+                logoutFromAcumatica(httpclient=self._http_client,config=self.config)
 
 
 # Basic incremental stream
@@ -165,7 +182,7 @@ class SourceAcumatica(AbstractSource):
             return True, None  
         return False, None
 
-    def streams(self, config: Mapping[str, Any]) -> List[Stream]:
+    def streams(self, config: Mapping[str, Any]) -> List[HttpStream]:
         accesstoken=get_access_token(config)
         auth = TokenAuthenticator(token=accesstoken)  # Oauth2Authenticator is also available if you need oauth support
         self.http_client = HttpClient(

@@ -31,3 +31,7 @@ connectionSpecification:
       type: string
       description: user password to login to acumatica
       airbyte_secret: true
+    PAGESIZE:
+      type: number
+      description: Number of records to fetch per page
+      default: 1000
