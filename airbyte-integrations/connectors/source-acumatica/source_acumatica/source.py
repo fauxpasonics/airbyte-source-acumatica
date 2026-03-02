@@ -59,7 +59,7 @@ class AcumaticaStream(Stream, ABC):
     @property
     def url_base(self):
         if(self._endpointtype=="contract"):
-            return self.config["BASEURL"] + "/entity/Default/23.200.001/"
+            return self.config["BASEURL"] + "/entity/Default/24.200.001/"
         elif(self._endpointtype=="DAC"):
             return self.config["BASEURL"] + "/odatav4/" + self.config["TENANTNAME"] + "/"
         elif(self._endpointtype=="Inquiry"):
