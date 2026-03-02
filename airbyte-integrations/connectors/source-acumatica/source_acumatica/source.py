@@ -48,6 +48,7 @@ class AcumaticaStream(Stream, ABC):
             authenticator=authenticator
         )
         self._page_size=self.config.get("PAGESIZE",1000)
+        self._streams_to_disable_paging=self.config.get("STREAMSTODISABLEPAGING",[])
         self._current_page=0
 
     @property
@@ -59,7 +60,7 @@ class AcumaticaStream(Stream, ABC):
     @property
     def url_base(self):
         if(self._endpointtype=="contract"):
-            return self.config["BASEURL"] + "/entity/Default/24.200.001/"
+            return self.config["BASEURL"] + "/entity/Default/" + self.config.get("APIVERSION","24.200.001") + "/"
         elif(self._endpointtype=="DAC"):
             return self.config["BASEURL"] + "/odatav4/" + self.config["TENANTNAME"] + "/"
         elif(self._endpointtype=="Inquiry"):
@@ -87,7 +88,7 @@ class AcumaticaStream(Stream, ABC):
             #logger.info(f"Request Params - Query: {query}")
         #logger.info(f"{inspect.stack()}")
             returnobj["$filter"] = query
-        if(next_page_token or next_page_token>=0):
+        if((next_page_token or next_page_token>=0) and self.name not in self._streams_to_disable_paging):
             returnobj["$top"]=self._page_size
             returnobj["$skip"]=next_page_token*self._page_size
         return returnobj
@@ -135,7 +136,7 @@ class AcumaticaStream(Stream, ABC):
                 else:
                     raise Exception(f"Error pulling Data:{response.status_code} - {response.content}")
                 yield from flattenedjsonvals
-                if len(flattenedjsonvals)==0:
+                if (len(flattenedjsonvals)==0 or self.name in self._streams_to_disable_paging):
                     pagination_complete = True
                 else:
                     self._current_page += 1

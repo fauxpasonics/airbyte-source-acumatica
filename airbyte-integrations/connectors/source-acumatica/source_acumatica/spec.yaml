@@ -35,3 +35,12 @@ connectionSpecification:
       type: number
       description: Number of records to fetch per page
       default: 1000
+    STREAMSTODISABLEPAGING:
+      type: array
+      description: List of streams to disable paging for. If a stream is in this list, the connector will attempt to fetch all records from that stream in a single request. This is useful for streams that do not support paging or have a small number of records.
+      items:
+        type: string
+    APIVERSION:
+      type: string
+      description: API version to use when connecting to Acumatica. If not specified, the connector will use the default API version.
+      default: "24.200.001"
