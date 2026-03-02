@@ -331,7 +331,7 @@ def getmetatdata(httpclient:HttpClient, config):
           , 'Connection': 'Close'
           , 'Content-Type': 'application/json'
           , 'Cache-Control': 'no-cache'}
-        metadataurl=urljoin(config["BASEURL"],"/entity/Default/23.200.001/swagger.json")
+        metadataurl=urljoin(config["BASEURL"],"/entity/Default/" + config.get("APIVERSION","24.200.001") + "/swagger.json")
         _,swaggerresponse = httpclient.send_request(http_method="GET",request_kwargs={},url=metadataurl,headers=headers)
         swaggerjson=swaggerresponse.json()
         logoutFromAcumatica(httpclient,config)
