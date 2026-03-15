@@ -23,9 +23,41 @@ from airbyte_cdk.models import SyncMode
 from airbyte_cdk.sources.streams.core import StreamData
 from airbyte_cdk.sources.streams.http import HttpStream,HttpClient
 from airbyte_cdk.sources.streams.http.requests_native_auth import TokenAuthenticator
+from airbyte_cdk.sources.streams.http.requests_native_auth.oauth import Oauth2Authenticator
 
 import logging
 logger = logging.getLogger("airbyte")
+
+
+class AcumaticaOauth2Authenticator(Oauth2Authenticator):
+    """
+    OAuth2 authenticator for Acumatica using Resource Owner Password Credentials (ROPC) flow.
+    Automatically handles token expiration and re-acquisition using username/password credentials.
+    """
+
+    def __init__(self, config: Mapping[str, Any]):
+        self._username = config["USERNAME"]
+        self._password = config["PASSWORD"]
+        super().__init__(
+            token_refresh_endpoint=f'{config["BASEURL"]}/identity/connect/token',
+            client_id=config["CLIENTID"],
+            client_secret=config["CLIENTSECRET"],
+            refresh_token="",  # Not used in ROPC flow
+            grant_type="password",
+        )
+
+    def build_refresh_request_body(self) -> Mapping[str, Any]:
+        return {
+            "grant_type": self.get_grant_type(),
+            "client_id": self.get_client_id(),
+            "client_secret": self.get_client_secret(),
+            "username": self._username,
+            "password": self._password,
+            "scope": "api offline_access",
+        }
+
+    def get_refresh_token(self) -> str:
+        return ""
 
 # Basic full refresh stream
 class AcumaticaStream(Stream, ABC):
@@ -177,15 +209,17 @@ class IncrementalAcumaticaStream(AcumaticaStream, ABC):
 # Source
 class SourceAcumatica(AbstractSource):
     def check_connection(self, logger, config) -> Tuple[bool, any]:
-        # Acumatica OAuth2 credentials
-        token = get_access_token(config)
-        if token != None:
-            return True, None  
-        return False, None
+        auth = AcumaticaOauth2Authenticator(config)
+        try:
+            token = auth.get_access_token()
+            if token is not None:
+                return True, None
+            return False, "Failed to obtain access token"
+        except Exception as e:
+            return False, str(e)
 
     def streams(self, config: Mapping[str, Any]) -> List[HttpStream]:
-        accesstoken=get_access_token(config)
-        auth = TokenAuthenticator(token=accesstoken)  # Oauth2Authenticator is also available if you need oauth support
+        auth = AcumaticaOauth2Authenticator(config)
         self.http_client = HttpClient(
             name="StreamClient",
             logger=logger,
