@@ -15,6 +15,8 @@ echo "Building:   $REPO:$VERSION"
 
 docker build \
   --build-arg BASE_IMAGE="$BASE_IMAGE" \
+  --build-arg CONNECTOR_VERSION="$VERSION" \
+  --build-arg CONNECTOR_REPO="$REPO" \
   -t "$REPO:$VERSION" \
   -t "$REPO:dev" \
   "$SCRIPT_DIR"

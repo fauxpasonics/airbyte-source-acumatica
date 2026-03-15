@@ -24,5 +24,7 @@ COPY main.py ./
 ENV AIRBYTE_ENTRYPOINT="python /airbyte/integration_code/main.py"
 ENTRYPOINT ["python", "/airbyte/integration_code/main.py"]
 
-LABEL io.airbyte.version=0.1.23
-LABEL io.airbyte.name=airbyte/source-acumatica
+ARG CONNECTOR_VERSION
+ARG CONNECTOR_REPO
+LABEL io.airbyte.version=${CONNECTOR_VERSION}
+LABEL io.airbyte.name=${CONNECTOR_REPO}
